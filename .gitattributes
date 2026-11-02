@@ -1,4 +1,6 @@
 * text=auto
 *.bat text eol=crlf
+# install.bat скачивают по прямой ссылке — храним с CRLF как есть
+install.bat -text
 *.ico binary
 *.png binary
