@@ -14,7 +14,7 @@ import re
 import ssl
 import time
 
-from . import db, slicer
+from . import db, security, slicer
 
 PORT = 990
 # Bambu Studio для P1/A1 указывает ftp_folder = "sdcard/" (resources/printers/C12.json)
@@ -22,6 +22,7 @@ SEARCH_DIRS = ("/", "/cache", "/model", "/sdcard", "/sdcard/cache")
 EXTS = (".gcode.3mf", ".3mf")
 CACHE_DIR = os.path.join(os.path.dirname(db.DB_PATH), "printer_files")  # рядом с базой
 KEEP_FILES = 60
+MAX_DOWNLOAD = 512 * 1024 * 1024  # больше — не файл задания (или подсунутый мусор)
 
 
 class ImplicitFTP_TLS(ftplib.FTP_TLS):
@@ -49,15 +50,14 @@ class ImplicitFTP_TLS(ftplib.FTP_TLS):
         return conn, size
 
 
-def _context():
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE  # сертификат принтера самоподписанный, только LAN
-    return ctx
+def _context(pin=None):
+    # сертификат принтера самоподписанный: цепочку не проверить, сверяем отпечаток
+    return security.PinnedContext(pin)
 
 
-def connect(host, access_code, timeout=10):
-    ftp = ImplicitFTP_TLS(context=_context(), timeout=timeout)
+def connect(host, access_code, timeout=10, pin=None):
+    """Отпечаток сверяется в рукопожатии — при подмене логин с кодом не отправляется."""
+    ftp = ImplicitFTP_TLS(context=_context(pin), timeout=timeout)
     ftp.connect(host, PORT, timeout=timeout)
     ftp.login("bblp", access_code)
     ftp.prot_p()
@@ -121,14 +121,30 @@ def _cleanup():
             pass
 
 
+def _remember_pin(printer, ftp):
+    """Первый успешный вход по FTPS — запомнить отпечаток сертификата."""
+    seen = getattr(getattr(ftp, "context", None), "seen", None)
+    if seen and printer.get("id") and not printer.get("ftp_pin"):
+        db.update("printers", printer["id"], {"ftp_pin": seen})
+        printer["ftp_pin"] = seen
+
+
+def _open(printer, connect_fn):
+    if connect_fn:
+        return connect_fn(printer["host"], printer["access_code"])
+    return connect(printer["host"], printer["access_code"], pin=printer.get("ftp_pin") or None)
+
+
 def fetch_plan(printer, job_name, gcode_file="", connect_fn=None):
     """Скачать файл задания с принтера и вернуть (plan, local_path, сообщение).
     plan = None, если файл не найден/не скачан."""
-    connect_fn = connect_fn or connect
     try:
-        ftp = connect_fn(printer["host"], printer["access_code"])
+        ftp = _open(printer, connect_fn)
+    except security.PinMismatch:
+        return None, None, "FTP: " + security.PIN_MISMATCH + " — код доступа не отправлен"
     except Exception as e:
         return None, None, "FTP: нет подключения (%s)" % e
+    _remember_pin(printer, ftp)
     try:
         listing = list_files(ftp)
         remote = find_remote(listing, job_name)
@@ -137,8 +153,22 @@ def fetch_plan(printer, job_name, gcode_file="", connect_fn=None):
             return None, None, "FTP: файл «%s» не найден на принтере (файлов .3mf: %d)" % (job_name, seen)
         local = _local_path(printer.get("serial"), remote)
         tmp = local + ".part"
-        with open(tmp, "wb") as f:
-            ftp.retrbinary("RETR " + remote, f.write)
+        got = [0]
+
+        def write(chunk):
+            got[0] += len(chunk)
+            if got[0] > MAX_DOWNLOAD:
+                raise ValueError("файл больше %d МБ — не скачиваю" % (MAX_DOWNLOAD // 2 ** 20))
+            f.write(chunk)
+        try:
+            with open(tmp, "wb") as f:
+                ftp.retrbinary("RETR " + remote, write)
+        except Exception:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
         os.replace(tmp, local)
     except Exception as e:
         return None, None, "FTP: ошибка загрузки (%s)" % e
@@ -160,11 +190,14 @@ def fetch_plan(printer, job_name, gcode_file="", connect_fn=None):
 def test(printer, connect_fn=None):
     """Для «Проверить связь»: подключение и список файлов на принтере."""
     t0 = time.time()
-    connect_fn = connect_fn or connect
     try:
-        ftp = connect_fn(printer["host"], printer["access_code"])
+        ftp = _open(printer, connect_fn)
+    except security.PinMismatch:
+        return {"ok": False, "message": "FTPS: " + security.PIN_MISMATCH + " — код доступа не отправлен",
+                "listing": None}
     except Exception as e:
         return {"ok": False, "message": "FTPS (порт 990): нет подключения — %s" % e, "listing": None}
+    _remember_pin(printer, ftp)
     try:
         listing = list_files(ftp)
     finally:

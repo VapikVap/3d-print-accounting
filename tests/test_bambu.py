@@ -73,7 +73,7 @@ class PushallThrottleTest(unittest.TestCase):
         fake.status = lambda: dict(bambu.interpret(fake.state), connected=True, age_s=600, error="")
         fake.request_full = lambda force=False: calls.append(force)
         poller = printers.Poller()
-        poller._bambu[pid] = (("h", "s", "c", 8883), fake)
+        poller._bambu[pid] = (("h", "s", "c", 8883, None), fake)
         for i in range(5):
             poller.tick(now=1000 + i * 5)
         # опрос может просить, но решает клиент; главное — не force
@@ -92,7 +92,7 @@ class BambuJobFlowTest(unittest.TestCase):
         self.poller._schedule = lambda fn, *a: fn(*a)
         self.client = FakeClient()
         p = db.get_row("printers", self.pid)
-        sig = (p["host"], p["serial"], p["access_code"], 8883)
+        sig = (p["host"], p["serial"], p["access_code"], 8883, None)  # None — отпечаток ещё не запомнен
         self.poller._bambu[self.pid] = (sig, self.client)
 
     def _run(self, part, now):

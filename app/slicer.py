@@ -11,6 +11,9 @@ import zipfile
 import xml.etree.ElementTree as ET
 
 EXTS = (".gcode.3mf", ".gcode", ".3mf", ".bgcode")
+# файл может прийти с подменённого устройства: не распаковываем огромное (zip-бомба)
+MAX_META = 5 * 1024 * 1024
+MAX_PLATE_GCODE = 64 * 1024 * 1024
 HEAD_BYTES = 256 * 1024
 TAIL_BYTES = 512 * 1024   # у Orca/Prusa итоги стоят перед большим блоком конфига в конце
 
@@ -128,7 +131,7 @@ def parse_3mf(path):
     out = {"filament_mm": None, "filament_g": None, "est_time_s": None, "slicer": None, "plates": []}
     with zipfile.ZipFile(path) as z:
         names = z.namelist()
-        if "Metadata/slice_info.config" in names:
+        if "Metadata/slice_info.config" in names and z.getinfo("Metadata/slice_info.config").file_size <= MAX_META:
             root = ET.fromstring(z.read("Metadata/slice_info.config"))
             for hdr in root.iter("header_item"):
                 if hdr.get("key") == "X-BBL-Client-Type" and not out["slicer"]:
@@ -155,7 +158,7 @@ def parse_3mf(path):
                 out["plates"].append(p)
         if not out["plates"]:
             for n in sorted(names):
-                if re.match(r"Metadata/plate_\d+\.gcode$", n):
+                if re.match(r"Metadata/plate_\d+\.gcode$", n) and z.getinfo(n).file_size <= MAX_PLATE_GCODE:
                     info = parse_gcode_text(z.read(n).decode("utf-8", errors="replace"))
                     out["plates"].append({
                         "index": int(re.findall(r"\d+", n)[0]),

@@ -211,6 +211,7 @@ class MqttServer:
         self.lock = threading.Lock()
         self.connections = 0
         self.pushalls = 0
+        self.credentials_seen = 0  # сколько раз нам прислали логин/пароль (для тестов подмены)
 
     def serve(self):
         threading.Thread(target=self._broadcast_loop, daemon=True).start()
@@ -243,6 +244,7 @@ class MqttServer:
             h, body = _read_packet(s)
             if h >> 4 != 1:
                 return
+            self.credentials_seen += 1
             _proto, i = _str(body, 0)
             flags = body[i + 1]
             i += 4  # level, flags, keepalive
@@ -321,6 +323,7 @@ class FtpServer:
         self.sock = socket.create_server((host, port))
         self.port = self.sock.getsockname()[1]
         self.downloads = []
+        self.credentials_seen = 0  # сколько раз пришёл USER/PASS
 
     def serve(self):
         while True:
@@ -352,6 +355,7 @@ class FtpServer:
                 cmd = cmd.upper()
                 if cmd == "USER":
                     user = arg
+                    self.credentials_seen += 1
                     send("331 Password required")
                 elif cmd == "PASS":
                     authed = user == "bblp" and arg == self.code

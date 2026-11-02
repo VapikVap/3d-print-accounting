@@ -12,3 +12,5 @@ def fresh_db():
         except FileNotFoundError:
             pass
     db.init()
+    from app import discovery
+    discovery._autoadded.clear()  # лимит автодобавлений — на каждый тест заново

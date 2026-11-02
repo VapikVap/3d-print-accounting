@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
-from . import bambu, bambu_ftp, db, logic, parts, slicer
+from . import bambu, bambu_ftp, db, logic, parts, security, slicer
 
 POLL_INTERVAL = 5.0
 HTTP_TIMEOUT = 4.0
@@ -53,7 +53,9 @@ def _http_error_text(e):
 
 def mr_get(printer, path, params=None):
     url = _base_url(printer["host"], printer.get("port") or 7125) + path
-    r = requests.get(url, params=params, timeout=HTTP_TIMEOUT)
+    # API-ключ — если на принтере включена авторизация Moonraker (без неё любой в сети управляет принтером)
+    headers = {"X-Api-Key": printer["access_code"]} if printer.get("access_code") else None
+    r = requests.get(url, params=params, timeout=HTTP_TIMEOUT, headers=headers)
     r.raise_for_status()
     return r.json()
 
@@ -451,16 +453,31 @@ class Poller:
 
     # ---- Bambu клиенты ----
     def bambu_client(self, printer):
-        sig = (printer["host"], printer["serial"], printer["access_code"], printer.get("port") or 8883)
-        cur = self._bambu.get(printer["id"])
+        pid = printer["id"]
+        pin = printer.get("mqtt_pin") or None
+        sig = (printer["host"], printer["serial"], printer["access_code"], printer.get("port") or 8883, pin)
+        cur = self._bambu.get(pid)
         if cur and cur[0] == sig:
             return cur[1]
         if cur:
             cur[1].stop()
-        c = bambu.BambuClient(printer["host"], printer["serial"], printer["access_code"], sig[3])
+
+        def on_pin(fp):
+            # первый вход с кодом: запомнить сертификат (и не пересоздавать клиент из-за этого)
+            db.update("printers", pid, {"mqtt_pin": fp})
+            db.log_event("info", printer["name"], "Сертификат принтера запомнен — подмена в сети будет замечена")
+            if pid in self._bambu:
+                self._bambu[pid] = (sig[:4] + (fp,), self._bambu[pid][1])
+        c = bambu.BambuClient(printer["host"], printer["serial"], printer["access_code"], sig[3], pin=pin, on_pin=on_pin)
         c.start()
-        self._bambu[printer["id"]] = (sig, c)
+        self._bambu[pid] = (sig, c)
         return c
+
+    def drop_bambu_client(self, printer_id):
+        """После «Доверять заново» — переподключиться без старого отпечатка."""
+        cur = self._bambu.pop(printer_id, None)
+        if cur:
+            cur[1].stop()
 
     def existing_bambu_client(self, printer_id):
         cur = self._bambu.get(printer_id)
@@ -519,6 +536,8 @@ class Poller:
                 if not p.get("access_code"):
                     return None, NEED_CODE  # найден автопоиском, код ещё не введён — не подключаемся
                 st = self.bambu_client(p).status()
+                if st.get("pin_mismatch"):
+                    return None, security.PIN_MISMATCH
                 if not st["connected"] and not st["state"]:
                     return None, st["error"] or CONNECTING
                 if st["age_s"] is not None and st["age_s"] > 120:
@@ -542,6 +561,11 @@ class Poller:
         live["reported"] = prev_live.get("reported", False)
         if err == CONNECTING and fails < OFFLINE_AFTER:
             live["online"] = None  # интерфейс: «подключение…»
+        if err == security.PIN_MISMATCH:
+            if not prev_live.get("pin_alert"):
+                db.log_event("error", p["name"], security.PIN_MISMATCH + ". Код доступа не отправлен. "
+                             "Если вы обновили прошивку или заменили принтер — «Доверять заново» в «Устройствах».")
+            live["pin_alert"] = live["pin_mismatch"] = True
         if err == NEED_CODE:
             live.update(online=None, need_code=True)
         elif fails == OFFLINE_AFTER:
@@ -726,7 +750,12 @@ def printer_test(printer, poller=None):
             return {"ok": False, "message": "Укажите IP, серийный номер и код доступа", "parsed": None, "raw": None}
         client = poller.existing_bambu_client(printer["id"]) if poller else None
         res = bambu.test_connection(printer["host"], printer["serial"], printer["access_code"],
-                                    printer.get("port") or 8883, client=client)
+                                    printer.get("port") or 8883, client=client, pin=printer.get("mqtt_pin") or None)
+        if res.get("pin_mismatch"):
+            return res  # FTPS тоже не трогаем: код не должен уйти подменённому устройству
+        if res.get("ok") and res.get("mqtt_pin") and not printer.get("mqtt_pin") and printer.get("id"):
+            db.update("printers", printer["id"], {"mqtt_pin": res["mqtt_pin"]})
+            res["message"] += ". Сертификат принтера запомнен"
         ftp = bambu_ftp.test(printer)
         res["message"] += ". " + ftp["message"]
         res["raw"] = {"mqtt_report": res.get("raw"), "ftp_files": ftp["listing"]}

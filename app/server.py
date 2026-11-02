@@ -165,6 +165,17 @@ def test_printer(rid):
     return _safe_result(res)
 
 
+@app.route("/api/printers/<int:rid>/trust", methods=["POST"])
+def trust_printer(rid):
+    """«Доверять заново»: забыть отпечатки сертификата (после обновления прошивки или
+    замены принтера). Новый отпечаток запомнится при следующем входе с кодом."""
+    p = db.get_row("printers", rid) or abort(404)
+    db.update("printers", rid, {"mqtt_pin": "", "ftp_pin": ""})
+    poller.drop_bambu_client(rid)
+    db.log_event("warn", p["name"], "Сертификат принтера сброшен пользователем — будет запомнен заново при подключении")
+    return jsonify({"ok": True})
+
+
 @app.route("/api/plugs/<int:rid>/test", methods=["POST"])
 def test_plug(rid):
     p = db.get_row("plugs", rid) or abort(404)

@@ -2,6 +2,8 @@
 
 Перед любой миграцией существующей базы делается резервная копия в data/backup/.
 Секретные поля (SECRET_FIELDS) никогда не отдаются наружу: см. public_row().
+В базе они зашифрованы (DPAPI, см. security.py): insert/update шифруют, all_rows/get_row
+расшифровывают — остальной код работает с обычными значениями.
 """
 import os
 import shutil
@@ -9,6 +11,8 @@ import sqlite3
 import threading
 import time
 from contextlib import contextmanager
+
+from . import security
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -135,6 +139,11 @@ MIGRATIONS = [
         PRIMARY KEY (printer_id, tray)
     );
     """,
+    # 4: отпечатки сертификатов принтера (защита от подмены в сети)
+    """
+    ALTER TABLE printers ADD COLUMN mqtt_pin TEXT DEFAULT '';
+    ALTER TABLE printers ADD COLUMN ftp_pin TEXT DEFAULT '';
+    """,
 ]
 
 DEFAULT_SETTINGS = {
@@ -208,6 +217,31 @@ def init():
             c.execute("PRAGMA user_version = %d" % (i + 1))
         for k, v in DEFAULT_SETTINGS.items():
             c.execute("INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)", (k, v))
+    _encrypt_stored_secrets()
+
+
+def _encrypt_stored_secrets():
+    """Коды и ключи, сохранённые до 0.0.3 открытым текстом, — зашифровать (DPAPI)."""
+    if not security.available():
+        return
+    with connect() as c:
+        for table, fields in (("printers", ("access_code",)), ("plugs", ("plug_key", "token"))):
+            for r in c.execute("SELECT id, %s FROM %s" % (",".join(fields), table)).fetchall():
+                for f in fields:
+                    v = r[f]
+                    if v and not str(v).startswith(security.PREFIX):
+                        c.execute("UPDATE %s SET %s = ? WHERE id = ?" % (table, f), (security.encrypt(v), r["id"]))
+
+
+def _decrypt_row(d):
+    for f in SECRET_FIELDS:
+        if d.get(f):
+            d[f] = security.decrypt(d[f])
+    return d
+
+
+def _encrypt_values(values):
+    return {k: (security.encrypt(v) if k in SECRET_FIELDS and v else v) for k, v in values.items()}
 
 
 # ---------- общие помощники ----------
@@ -229,12 +263,12 @@ def secret_values():
     with connect() as c:
         for r in c.execute("SELECT access_code FROM printers"):
             if r[0]:
-                vals.add(r[0])
+                vals.add(security.decrypt(r[0]))
         for r in c.execute("SELECT plug_key, token FROM plugs"):
             for v in r:
                 if v:
-                    vals.add(v)
-    return vals
+                    vals.add(security.decrypt(v))
+    return {v for v in vals if v}
 
 
 def redact(obj, secrets=None):
@@ -266,13 +300,13 @@ def set_settings(values):
 
 def all_rows(table, where="", params=()):
     with connect() as c:
-        return [dict(r) for r in c.execute("SELECT * FROM %s %s" % (table, where), params)]
+        return [_decrypt_row(dict(r)) for r in c.execute("SELECT * FROM %s %s" % (table, where), params)]
 
 
 def get_row(table, row_id):
     with connect() as c:
         r = c.execute("SELECT * FROM %s WHERE id = ?" % table, (row_id,)).fetchone()
-        return dict(r) if r else None
+        return _decrypt_row(dict(r)) if r else None
 
 
 def columns(table):
@@ -281,6 +315,7 @@ def columns(table):
 
 
 def insert(table, values):
+    values = _encrypt_values(values)
     cols = [k for k in values if k in columns(table) and k != "id"]
     with connect() as c:
         cur = c.execute(
@@ -291,6 +326,7 @@ def insert(table, values):
 
 
 def update(table, row_id, values):
+    values = _encrypt_values(values)
     cols = [k for k in values if k in columns(table) and k != "id"]
     if not cols:
         return

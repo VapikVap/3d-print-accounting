@@ -216,6 +216,18 @@ details.dev.new{border-color:var(--stroke2)}
 
   <section id="devices">
     <div id="discoveredBox"></div>
+    <details class="glass card" style="margin-bottom:14px" id="secTips">
+      <summary style="cursor:pointer"><b>Безопасность сети</b> <span class="muted small">— что защищает приложение и что сделать вам</span></summary>
+      <div class="kv" style="margin-top:10px;grid-template-columns:1fr">
+        <span><b>Приложение:</b> работает только на этом компьютере; запоминает сертификат принтера Bambu и не отправит код доступа
+          подменённому устройству; не меняет IP принтера по подозрительному объявлению в сети; хранит коды и ключи зашифрованными (Windows).</span>
+        <span><b>Сеть:</b> надёжный пароль Wi-Fi (WPA2/WPA3), отключите WPS, обновляйте прошивку роутера, смените пароль администратора роутера.
+          Лучше всего — отдельная гостевая/IoT-сеть для принтеров и розеток, но компьютер с приложением должен её видеть.</span>
+        <span><b>Bambu Lab:</b> обновляйте прошивку; код доступа можно сменить на экране принтера (после смены — «Доверять заново» не нужно, только новый код).</span>
+        <span><b>Klipper / K1:</b> без авторизации Moonraker любой в сети управляет принтером — включите её и укажите API-ключ в настройках принтера.</span>
+        <span><b>Розетки Shelly / Tasmota:</b> задайте пароль в их веб-интерфейсе — иначе любой в сети может выключить питание принтера.</span>
+      </div>
+    </details>
     <h2 class="sub" style="margin-top:4px">Принтеры <span class="spacer"></span><button class="btn" onclick="newDevice('printers')">+ Добавить принтер</button></h2>
     <div class="acc" id="printersAcc"></div>
     <h2 class="sub">Розетки с учётом энергии <span class="spacer"></span><button class="btn" onclick="newDevice('plugs')">+ Добавить розетку</button></h2>
@@ -357,6 +369,10 @@ function renderPrinterCards() {
           <b>Энергия</b><span>${num(j.energy_kwh,3)} кВт·ч <span class="muted small">${SRC[j.energy_source]||''}</span></span>
           <b>Затраты</b><span>${money(j.cost_total)}</span></div>
         ${partsHtml(j)}` : `<div class="muted" style="margin-top:10px">Сейчас не печатает</div>`}
+      ${l.pin_mismatch ? `<div class="result bad" style="margin-top:10px"><b>Возможна подмена принтера в сети.</b>
+        Сертификат устройства по адресу ${esc(p.host)} не совпадает с запомненным — приложение не отправило ему код доступа.
+        Если вы обновили прошивку или заменили принтер, это нормально.
+        <div style="margin-top:8px"><button class="btn sm" onclick="trustPrinter(${p.id})">Доверять заново…</button></div></div>` : ''}
       ${l.need_code ? `<div class="result" style="margin-top:10px">Принтер найден в сети${p.serial ? ' (серийный ' + esc(p.serial) + ')' : ''}.
         Введите код доступа с экрана принтера — дальше всё определится само.
         <div style="margin-top:8px"><button class="btn sm" onclick="openDevice('printers', ${p.id})">Ввести код доступа</button></div></div>` : ''}
@@ -467,6 +483,7 @@ function printerFields(p) {
       ['serial', 'Серийный номер', 'text', null, 'На экране: Настройки → Устройство, или на наклейке сзади'],
       ['access_code', 'Код доступа', 'secret', null, 'На экране в настройках сети (LAN). Нужен для статуса и чтобы брать расход из файла на принтере. Хранится только на этом компьютере.'],
     ] : []),
+    ...(!bambu ? [['access_code', 'API-ключ Moonraker', 'secret', null, 'Если на принтере включена авторизация Moonraker. Без неё любой в вашей сети может управлять принтером — см. «Безопасность сети».']] : []),
     ['port', 'Порт', 'number', null, bambu ? 'Обычно 8883 — менять не нужно' : 'Moonraker обычно 7125'],
     ['plug_id', 'Розетка', 'ref', S.plugs.map(x => ({id:x.id, label:x.name})), 'Через неё считается энергия'],
     ['filament_id', 'Катушка сейчас', 'ref', S.filaments.map(x => ({id:x.id, label:`${x.material} ${x.name} ${x.color}`.trim()})), 'Новые задания спишут нить с неё'],
@@ -514,12 +531,29 @@ function fieldHtml(scope, data, [k, label, type, extra, help]) {
   return `<label>${label}<input data-f="${k}" id="${id}" ${type === 'number' ? 'type="number" step="any"' : ''} value="${esc(v)}">${h}</label>`;
 }
 
+function pinHtml(d) {
+  const has = d.mqtt_pin || d.ftp_pin;
+  return `<div class="hint" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <span style="flex:1"><b>Сертификат принтера:</b> ${has
+      ? `запомнен <span class="path">${esc((d.mqtt_pin || d.ftp_pin).slice(0, 16))}…</span> — подменённому устройству код доступа не уйдёт`
+      : 'будет запомнен при первом подключении с кодом доступа'}</span>
+    ${has ? `<button class="btn ghost sm" onclick="trustPrinter(${d.id})">Доверять заново…</button>` : ''}</div>`;
+}
+async function trustPrinter(id) {
+  if (!confirm('Забыть сертификат принтера и запомнить новый при следующем подключении?\n\n'
+      + 'Делайте это, только если вы обновили прошивку или заменили принтер. Если ничего такого не было — '
+      + 'возможно, в сети кто-то выдаёт себя за ваш принтер.')) return;
+  try { await api(`/api/printers/${id}/trust`, {method:'POST'}); await loadRefs();
+        delete S.drafts[keyOf('printers', id)]; renderDevices(); refreshState(); toast('Сертификат будет запомнен заново'); }
+  catch (e) { toast(e.message, true); }
+}
 function deviceForm(table, key, d) {
   if (table === 'printers') {
     return `<div class="muted small" style="margin-top:12px">Модель</div>
       <div class="tiles">${PRINTER_MODELS.map(([m, kind]) => `<div class="tile ${d.model === m || (!d.model && kind === d.kind && m.startsWith('Другой')) ? 'on' : ''}"
         onclick="pickModel('${key}', '${esc(m)}', '${kind}')">${esc(m)}<small>${kind === 'bambu' ? 'MQTT, LAN' : 'Moonraker'}</small></div>`).join('')}</div>
-      <div class="form">${printerFields(d).map(f => fieldHtml(key, d, f)).join('')}</div>`;
+      <div class="form">${printerFields(d).map(f => fieldHtml(key, d, f)).join('')}</div>
+      ${d.kind === 'bambu' && d.id ? pinHtml(d) : ''}`;
   }
   return `<div class="muted small" style="margin-top:12px">Тип розетки</div>
     <div class="tiles">${Object.entries(PLUG_KINDS).map(([kind, [t, sub]]) => `<div class="tile ${d.kind === kind ? 'on' : ''}"

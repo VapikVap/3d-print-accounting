@@ -46,6 +46,7 @@
   app/bambu_ftp.py файл задания с принтера Bambu по FTPS (порт 990)
   app/parts.py     пластики задания, привязка катушек к слотам AMS
   app/discovery.py автопоиск принтеров Bambu в сети (SSDP, UDP 2021/1990)
+  app/security.py  отпечаток сертификата принтера (TOFU), шифрование секретов DPAPI
   app/bambu_models.py коды моделей (C12 = P1S …) из Bambu Studio
   app/autostart.py запуск вместе с Windows (HKCU\...\Run)
   app/slicer.py    разбор .gcode и .gcode.3mf из папки слайсера

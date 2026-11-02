@@ -14,11 +14,13 @@ import struct
 import threading
 import time
 
-from . import bambu_models, db
+from . import bambu_models, db, security
 
 MCAST = "239.255.255.250"
 PORTS = (2021, 1990)
 FORGET_AFTER = 600.0  # не видели 10 минут — убираем из «найденных»
+AUTOADD_LIMIT = (3, 600.0)  # не больше 3 новых принтеров за 10 минут: поток подделок не засорит список
+_autoadded = []  # время автодобавлений
 NT = "urn:bambulab-com:device:3dprinter:1"
 
 
@@ -76,6 +78,8 @@ def register(info, force=False):
         p = rows[0]
         vals = {}
         if info["ip"] and p["host"] != info["ip"]:
+            if not _same_printer(p, info["ip"]):
+                return p["id"]
             vals["host"] = info["ip"]
             db.log_event("info", p["name"], "IP принтера изменился: %s → %s" % (p["host"] or "—", info["ip"]))
         if info["model"] and not p.get("model"):
@@ -85,6 +89,13 @@ def register(info, force=False):
         return p["id"]
     if not force and (info["serial"] in ignored() or db.get_settings().get("discovery_autoadd", "1") != "1"):
         return None
+    now = time.time()
+    _autoadded[:] = [x for x in _autoadded if now - x < AUTOADD_LIMIT[1]]
+    if not force and len(_autoadded) >= AUTOADD_LIMIT[0]:
+        db.log_event("warn", "поиск", "Слишком много новых принтеров в сети за короткое время — %s (%s) не добавлен "
+                     "автоматически. Если он ваш, добавьте в «Устройства → Найдены в сети»." % (info["serial"], info["ip"]))
+        return None
+    _autoadded.append(now)
     pid = db.insert("printers", {
         "name": info["name"] or short_model(info["model"]) or "Bambu Lab", "model": info["model"],
         "kind": "bambu", "host": info["ip"], "port": 8883, "serial": info["serial"], "enabled": 1,
@@ -93,6 +104,25 @@ def register(info, force=False):
                  "Найден в сети и добавлен: %s, IP %s, серийный %s. Введите код доступа."
                  % (info["model"], info["ip"], info["serial"]))
     return pid
+
+
+def _same_printer(p, new_ip):
+    """Объявление «принтер теперь на новом IP» мог прислать кто угодно. Если сертификат
+    принтера уже запомнен — меняем адрес, только если по новому IP тот же сертификат
+    (проверка без логина: код доступа никуда не уходит)."""
+    pin = p.get("mqtt_pin")
+    if not pin:
+        return True  # ещё ни разу не подключались — сравнивать не с чем
+    try:
+        seen = security.probe(new_ip, p.get("port") or 8883)
+    except Exception as e:
+        db.log_event("warn", p["name"], "Объявление о новом IP %s не подтверждено (%s) — адрес не меняю" % (new_ip, e))
+        return False
+    if seen != pin:
+        db.log_event("error", p["name"], "Подозрительное объявление в сети: принтер якобы на %s, но сертификат там "
+                     "чужой — адрес не меняю, код доступа не отправлен" % new_ip)
+        return False
+    return True
 
 
 class Discovery:

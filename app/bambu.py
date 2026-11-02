@@ -3,7 +3,8 @@
 
 Принтер шлёт полный отчёт только в ответ на pushall, дальше — частичные
 изменения (особенно P1/A1), поэтому состояние накапливается слиянием.
-Сертификат принтера самоподписанный — проверка отключена (только LAN).
+Сертификат принтера самоподписанный, поэтому цепочка не проверяется, но отпечаток
+сертификата запоминается при первом входе и сверяется до отправки кода (security.py).
 """
 import json
 import ssl
@@ -12,6 +13,7 @@ import time
 
 import paho.mqtt.client as mqtt
 
+from . import security
 from .slicer import normalize_color
 
 # gcode_state -> общий статус приложения
@@ -154,9 +156,12 @@ def interpret(print_state, modules=None):
 
 
 class BambuClient:
-    def __init__(self, host, serial, access_code, port=8883):
+    def __init__(self, host, serial, access_code, port=8883, pin=None, on_pin=None):
         self.host, self.serial, self.port = host, serial, int(port or 8883)
         self._code = access_code
+        self._ctx = security.PinnedContext(pin)
+        self._on_pin = on_pin          # сохранить отпечаток после первого входа с кодом
+        self.pin_mismatch = False
         self.state = {}
         self.last_raw = None          # последний сырой отчёт (без секретов — их там нет)
         self.last_report_ts = 0.0
@@ -180,11 +185,9 @@ class BambuClient:
         c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
                         client_id="print-acc-%s-%d" % (self.serial[-6:], int(time.time())))
         c.username_pw_set("bblp", self._code)
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        c.tls_set_context(ctx)
+        c.tls_set_context(self._ctx)  # сверка отпечатка — до того, как уйдёт код доступа
         c.on_connect = self._on_connect
+        c.on_connect_fail = self._on_connect_fail
         c.on_disconnect = self._on_disconnect
         c.on_message = self._on_message
         c.reconnect_delay_set(min_delay=5, max_delay=60)
@@ -227,6 +230,12 @@ class BambuClient:
         if reason_code == 0 or getattr(reason_code, "value", 1) == 0:
             self.connected = True
             self.error = ""
+            self.pin_mismatch = False
+            if not self._ctx.expected and self._ctx.seen:
+                # первый вход с верным кодом: запоминаем сертификат этого принтера
+                self._ctx.expected = self._ctx.seen
+                if self._on_pin:
+                    self._on_pin(self._ctx.seen)
             client.subscribe(self.topic_report)
             self.request_full(force=True)  # после (пере)подключения состояние надо собрать заново
             self.request_version()
@@ -234,6 +243,16 @@ class BambuClient:
             self.connected = False
             # 134/135 — неверный логин/пароль (код доступа) или нет LAN-режима
             self.error = "MQTT отказ: %s" % reason_code
+
+    def _on_connect_fail(self, client, userdata):
+        if self._ctx.expected and self._ctx.seen and self._ctx.seen != self._ctx.expected:
+            self.pin_mismatch = True
+            self.connected = False
+            self.error = security.PIN_MISMATCH
+
+    @property
+    def pin(self):
+        return self._ctx.expected
 
     def _on_disconnect(self, client, userdata, flags, reason_code, properties=None):
         self.connected = False
@@ -259,6 +278,7 @@ class BambuClient:
         with self._lock:
             st = interpret(self.state, self.modules)
         st["connected"] = self.connected
+        st["pin_mismatch"] = self.pin_mismatch
         st["age_s"] = time.time() - self.last_report_ts if self.last_report_ts else None
         st["error"] = self.error
         return st
@@ -268,12 +288,12 @@ class BambuClient:
             return json.loads(json.dumps(self.last_raw)) if self.last_raw else None
 
 
-def test_connection(host, serial, access_code, port=8883, wait_s=10, client=None):
+def test_connection(host, serial, access_code, port=8883, wait_s=10, client=None, pin=None):
     """Проверка связи: ждём первый отчёт. Если уже есть рабочий клиент — используем его
     (у Bambu ограничено число одновременных MQTT-подключений)."""
     own = client is None
     if own:
-        client = BambuClient(host, serial, access_code, port)
+        client = BambuClient(host, serial, access_code, port, pin=pin)
         client.start()
     else:
         client.request_full()
@@ -285,12 +305,16 @@ def test_connection(host, serial, access_code, port=8883, wait_s=10, client=None
             if client.last_report_ts and client.state.get("gcode_state") is not None \
                     and (client.modules is not None or time.time() - t0 > 4):
                 break  # ответ на get_version ждём недолго: старые прошивки могут молчать
-            if client.error and "отказ" in client.error:
+            if client.error and ("отказ" in client.error or client.pin_mismatch):
                 break
             time.sleep(0.2)
         st = client.status()
         with client._lock:
             raw = json.loads(json.dumps({"report": {"print": client.state}, "get_version": client.last_version}))
+        if client.pin_mismatch:
+            return {"ok": False, "message": security.PIN_MISMATCH + ". Код доступа НЕ отправлен. Если вы обновили "
+                    "прошивку или заменили принтер — нажмите «Доверять заново».", "parsed": st, "raw": None,
+                    "pin_mismatch": True}
         if client.last_report_ts:
             msg = "Отчёт получен, gcode_state=%s" % st["raw_state"]
             if st.get("firmware"):
@@ -301,7 +325,7 @@ def test_connection(host, serial, access_code, port=8883, wait_s=10, client=None
                     for u in st["ams_units"])
             else:
                 msg += ". AMS не обнаружен"
-            return {"ok": True, "message": msg, "parsed": st, "raw": raw}
+            return {"ok": True, "message": msg, "parsed": st, "raw": raw, "mqtt_pin": client.pin}
         if client.error:
             return {"ok": False, "message": client.error +
                     ". Проверьте код доступа и что на принтере включён режим LAN.",

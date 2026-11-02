@@ -102,7 +102,7 @@ class PollerFtpTest(unittest.TestCase):
         self.client.state = {}
         self.client.status = lambda: dict(bambu.interpret(self.client.state), connected=True, age_s=1, error="")
         p = db.get_row("printers", self.pid)
-        self.poller._bambu[self.pid] = ((p["host"], p["serial"], p["access_code"], 8883), self.client)
+        self.poller._bambu[self.pid] = ((p["host"], p["serial"], p["access_code"], 8883, None), self.client)
         self.ftp = FakeFTP({"/cache": {"Benchy.gcode.3mf": make_3mf()}})
         self.poller.fetch_plan = lambda pr, name, gf: bambu_ftp.fetch_plan(pr, name, gf, connect_fn=lambda h, c: self.ftp)
         self.deferred = []
