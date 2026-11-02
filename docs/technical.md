@@ -49,15 +49,19 @@
   app/bambu_models.py коды моделей (C12 = P1S …) из Bambu Studio
   app/autostart.py запуск вместе с Windows (HKCU\...\Run)
   app/slicer.py    разбор .gcode и .gcode.3mf из папки слайсера
-  app/bambu_studio.py  поиск и запуск Bambu Studio, профили филамента, недавние папки
+  app/slicers.py   слайсеры: поиск (реестр Windows, папка приложения, вручную), запуск,
+                   профили пластика (Orca/Bambu, PrusaSlicer, Cura), недавние папки
   app/export.py    Excel
   app/static/index.html  интерфейс
   tools/mock_moonraker.py  эмулятор Moonraker (7125) и розеток Shelly/Tasmota (7126)
   tests/           проверки (run_tests.bat); работают на временной базе
 
-BAMBU STUDIO
-  Программа ищется сама: папка «Bambu Studio» в проекте, затем Program Files.
-  Другой путь — вкладка «Bambu Studio» → «Другая программа…».
+СЛАЙСЕРЫ (с 0.0.2 — все, а не только Bambu Studio)
+  Ищутся сами: установленные программы Windows (реестр Uninstall), копии в папке приложения,
+  добавленные вручную на вкладке «Слайсеры». Профили: Orca/Bambu — resources/profiles/<Производитель>/
+  filament/*.json + <AppData>/user/*/filament; PrusaSlicer — resources/profiles/*.ini, [filament:...];
+  Cura — share/cura/resources/materials/*.xml.fdm_material, цена из cura.cfg (material_settings).
+  Ниже — подробности для Bambu Studio (у остальных Orca-форков устроено так же).
   Что связано:
     - папка нарезки: сохраняйте в неё .gcode.3mf (Файл → Экспорт → Экспорт нарезанного
       файла пластины) — оттуда берётся план расхода и времени; есть подсказки из

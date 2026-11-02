@@ -14,7 +14,7 @@ if __package__ in (None, ""):
 
 from flask import Flask, Response, abort, jsonify, request, send_from_directory
 
-from app import REPO_URL, __version__, autostart, bambu_studio, db, discovery, export, parts, printers, slicer
+from app import REPO_URL, __version__, autostart, db, discovery, export, parts, printers, slicer, slicers
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("PRINT_PORT", "8765"))
@@ -342,22 +342,42 @@ def slicer_files():
     return jsonify({"folder": folder, "files": [dict(f, plates=None) for f in files[:200]], "error": ""})
 
 
-@app.route("/api/bambu-studio")
-def bambu_studio_info():
-    return jsonify(bambu_studio.info())
+@app.route("/api/slicers")
+def slicers_info():
+    """Найденные слайсеры (установленные, рядом с приложением, добавленные вручную)."""
+    items = slicers.find_all()
+    return jsonify({"items": items, "recent_folders": slicers.recent_folders(items),
+                    "known": [{"kind": k[0], "name": k[1]} for k in slicers.KNOWN]})
 
 
-@app.route("/api/bambu-studio/filaments")
-def bambu_studio_filaments():
-    return jsonify(bambu_studio.filament_presets())
+@app.route("/api/slicers/filaments")
+def slicers_filaments():
+    return jsonify(slicers.filament_presets())
 
 
-@app.route("/api/bambu-studio/open", methods=["POST"])
-def bambu_studio_open():
-    path = (request.get_json(silent=True) or {}).get("path") or None
-    err = bambu_studio.open_file(path)
+@app.route("/api/slicers/open", methods=["POST"])
+def slicers_open():
+    d = request.get_json(silent=True) or {}
+    err = slicers.open_file(d.get("path") or None, d.get("slicer_id") or None)
     if err:
         abort(400, err)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/slicers/custom", methods=["POST", "DELETE"])
+def slicers_custom():
+    """Добавить/убрать слайсер вручную — по пути к его .exe (выбирает пользователь)."""
+    d = request.get_json(silent=True) or {}
+    exe = os.path.normpath(str(d.get("exe") or "").strip().strip('"'))
+    items = [c for c in slicers.custom_list() if os.path.normcase(c["exe"]) != os.path.normcase(exe)]
+    if request.method == "POST":
+        if not (exe.lower().endswith(".exe") and os.path.isfile(exe)):
+            abort(400, "Нужен путь к .exe слайсера")
+        items.append({"exe": exe, "name": str(d.get("name") or "").strip()
+                      or os.path.splitext(os.path.basename(exe))[0]})
+    elif db.get_settings().get("bambu_studio_path", "").strip().strip('"').lower() in (exe.lower(), os.path.dirname(exe).lower()):
+        db.set_settings({"bambu_studio_path": ""})  # путь из версии 0.0.1
+    slicers.set_custom(items)
     return jsonify({"ok": True})
 
 
@@ -421,6 +441,8 @@ def start_background():
     poller.start()
     finder.start()
     import threading
+    # профили слайсеров (тысячи файлов) — прочитать заранее, чтобы окно катушки открывалось сразу
+    threading.Thread(target=slicers.filament_presets, name="presets", daemon=True).start()
     threading.Thread(target=srv.serve_forever, name="http", daemon=True).start()
     db.log_event("info", "server", "Запуск приложения")
     return srv

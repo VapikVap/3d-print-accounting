@@ -25,8 +25,8 @@ def _from_studio():
         return _cache["studio"]
     out = {}
     try:
-        from . import bambu_studio
-        exe = bambu_studio.find_exe()
+        from . import slicers
+        exe = next((s["exe"] for s in slicers.find_all() if s["kind"] == "bambu"), None)
     except Exception:
         exe = None
     if exe:

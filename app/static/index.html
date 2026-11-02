@@ -189,7 +189,7 @@ details.dev.new{border-color:var(--stroke2)}
     <button data-tab="jobs">Задания</button>
     <button data-tab="devices">Устройства</button>
     <button data-tab="filaments">Филамент</button>
-    <button data-tab="studio">Bambu Studio</button>
+    <button data-tab="studio">Слайсеры</button>
     <button data-tab="settings">Настройки</button>
     <button data-tab="events">Журнал</button>
   </nav>
@@ -709,7 +709,7 @@ async function loadJobs() {
       <td class="num">${num(j.energy_kwh,3)}<div class="muted small">${SRC[j.energy_source]||''}</div></td>
       <td class="num">${money(j.cost_total)}</td><td class="num">${money(j.price)}</td>
       <td><div class="row-actions" style="flex-wrap:nowrap"><button class="btn ghost sm" onclick="editJob(${j.id})">Изменить</button>
-        ${j.slicer_file ? `<button class="btn ghost sm" title="${esc(j.slicer_file)}" onclick="openInStudio(${esc(JSON.stringify(j.slicer_file))})">В Bambu Studio</button>` : ''}</div></td></tr>`).join('');
+        ${j.slicer_file ? `<button class="btn ghost sm" title="${esc(j.slicer_file)}" onclick="openInStudio(${esc(JSON.stringify(j.slicer_file))})">В слайсере</button>` : ''}</div></td></tr>`).join('');
 }
 
 function opts(list, sel, empty='— не выбрано —') {
@@ -783,20 +783,20 @@ function renderFilaments() {
       <td class="num">${f.price_kg ? money(f.price_kg) : '<span style="color:var(--warn)" title="Без цены себестоимость нити будет 0">укажите цену</span>'}</td><td class="num" style="${f.remaining_g < 100 ? 'color:var(--warn)' : ''}">${num(f.remaining_g,0)}</td>
       <td class="num">${num(f.diameter_mm)} / ${num(f.density)}</td>
       <td><button class="btn ghost sm" onclick="editFilament(${f.id})">Изменить</button></td></tr>`).join('')
-    : '<tr><td class="empty">Катушек нет. Добавьте — можно взять параметры из профилей Bambu Studio.</td></tr>';
+    : '<tr><td class="empty">Катушек нет. Добавьте — можно взять параметры из профилей ваших слайсеров.</td></tr>';
 }
 let PRESETS = null;
 async function editFilament(id) {
   const f = id ? S.filaments.find(x => x.id === id) : {material:'PLA', diameter_mm:1.75, density:1.24, price_kg:'', remaining_g:1000, archived:0};
-  if (PRESETS === null) PRESETS = await api('/api/bambu-studio/filaments').catch(() => []);
+  if (PRESETS === null) PRESETS = await api('/api/slicers/filaments').catch(() => []);
   const field = (k, l, type, help) => `<label>${l}<input id="fl_${k}" ${type === 'number' ? 'type="number" step="any"' : ''} value="${esc(f[k] ?? '')}">${help ? `<span class="help">${help}</span>` : ''}</label>`;
   openDlg(`<h3>${id ? 'Катушка' : 'Новая катушка'}</h3>
-    ${PRESETS.length ? `<label>Взять параметры из профиля Bambu Studio
+    ${PRESETS.length ? `<label>Взять параметры из профиля слайсера
       <input id="fl_preset" list="presetList" placeholder="Начните вводить: PLA Basic, PETG HF…" oninput="applyPreset(this.value)">
-      <datalist id="presetList">${PRESETS.map(p => `<option value="${esc(p.name)}">${esc(p.material)} · ${num(p.density)} г/см³${p.source === 'user' ? ' · мой профиль' : ''}</option>`).join('')}</datalist>
+      <datalist id="presetList">${PRESETS.map(p => `<option value="${esc(p.name)}">${esc(p.material)} · ${num(p.density)} г/см³ · ${esc(p.vendor)} · ${esc(p.slicer)}${p.source === 'user' ? ' · мой профиль' : ''}</option>`).join('')}</datalist>
       <span class="help">Заполнит название, материал, плотность и диаметр. Цену укажите свою.</span></label>` : ''}
     <div class="form">
-      ${field('name','Название')}${field('material','Материал',null,'Как в Bambu Studio: PLA, PETG, ABS…')}
+      ${field('name','Название')}${field('material','Материал',null,'Как в слайсере: PLA, PETG, ABS…')}
       <label>Цвет<div style="display:flex;gap:8px;margin-top:4px"><input id="fl_color_hex" type="color" value="${/^#[0-9A-Fa-f]{6}$/.test(f.color_hex || '') ? f.color_hex : '#ffffff'}" style="width:48px;padding:2px">
         <input id="fl_color" value="${esc(f.color ?? '')}" placeholder="белый"></div><span class="help">Цвет нужен, чтобы узнать катушку в многоцветной печати</span></label>
       ${field('price_kg','Цена за кг, ₽','number','Сколько вы заплатили за 1 кг')}
@@ -831,40 +831,65 @@ async function deleteFilament(id) {
   await api('/api/filaments/' + id, {method:'DELETE'}); closeDlg(); await loadRefs(); renderFilaments(); toast('Удалено');
 }
 
-// ---------- Bambu Studio ----------
+// ---------- слайсеры ----------
+const FAMILY = {orca:'профили Orca/Bambu', prusa:'профили PrusaSlicer', cura:'материалы Cura', '':'только запуск и открытие файлов'};
 async function loadStudio() {
-  S.studio = await api('/api/bambu-studio').catch(() => null);
-  const st = S.studio || {};
-  $('#studioApp').innerHTML = `<h3>Программа Bambu Studio ${st.found ? '<span class="pill ok">найдена</span>' : '<span class="pill warn">не найдена</span>'}</h3>
-    ${st.found ? `<div class="kv"><b>Файл</b><span class="path">${esc(st.exe)}</span>
-      ${st.version ? `<b>Версия</b><span>${esc(st.version.replace(/^0/, '').replace(/\.0/g, '.'))}</span>` : ''}
-      <b>Профили филамента</b><span>${st.profiles} — используются при добавлении катушки</span></div>`
-      : '<div class="muted">Укажите, где лежит bambu-studio.exe.</div>'}
+  S.studio = await api('/api/slicers').catch(() => null);
+  const st = S.studio || {items:[], recent_folders:[], known:[]};
+  const list = st.items;
+  $('#studioApp').innerHTML = `<h3>Слайсеры ${list.length ? `<span class="pill ok">${list.length}</span>` : '<span class="pill warn">не найдены</span>'}</h3>
+    <div class="muted small">Установленные слайсеры находятся сами. Из них берутся профили пластика для новых катушек;
+      файлы заданий открываются в слайсере, отмеченном «открывает файлы».</div>
+    <div class="steps" style="margin-top:10px">${list.map(s => `<div class="step" style="align-items:flex-start">
+      <span class="n" style="font-size:11px">${esc((s.name || '?')[0])}</span>
+      <span class="t"><b>${esc(s.name)}</b>${s.version ? ` <span class="muted">${esc(s.version)}</span>` : ''}
+        ${s.default ? ' <span class="pill ok">открывает файлы</span>' : ''} <span class="pill">${esc(s.source)}</span>
+        <div class="muted small">${esc(FAMILY[s.family] ?? FAMILY[''])}</div>
+        <div class="path muted">${esc(s.exe)}</div></span>
+      <span class="row-actions" style="flex-direction:column;align-items:stretch">
+        <button class="btn sm" onclick="openInStudio(null, ${esc(JSON.stringify(s.id))})">Запустить</button>
+        ${s.default ? '' : `<button class="btn ghost sm" onclick="setDefaultSlicer(${esc(JSON.stringify(s.id))})">Открывать файлы этим</button>`}
+        ${s.source === 'добавлен вручную' ? `<button class="btn ghost sm" onclick="removeSlicer(${esc(JSON.stringify(s.exe))})">Убрать</button>` : ''}
+      </span></div>`).join('') || '<div class="empty">Слайсеры не найдены. Добавьте вручную — укажите файл программы (.exe).</div>'}</div>
     <div class="row-actions" style="margin-top:12px">
-      ${st.found ? '<button class="btn" onclick="openInStudio(null)">Запустить Bambu Studio</button>' : ''}
-      ${desktop() ? `<button class="btn ghost" onclick="pickStudioExe()">${st.found ? 'Другая программа…' : 'Указать bambu-studio.exe…'}</button>` : ''}
-      ${st.configured ? '<button class="btn ghost" onclick="setStudioPath(\'\')">Искать автоматически</button>' : ''}
-    </div>`;
+      ${desktop() ? '<button class="btn ghost" onclick="pickSlicerExe()">+ Добавить слайсер вручную…</button>'
+        : '<input id="slicerExeInput" placeholder="Путь к .exe слайсера" style="flex:1"><button class="btn ghost" onclick="addSlicer(document.getElementById(\'slicerExeInput\').value)">Добавить</button>'}
+    </div>
+    <div class="hint" style="margin-top:10px">Находятся сами: ${(st.known || []).map(k => esc(k.name)).join(', ')}.
+      Профили пластика читаются у слайсеров на основе Orca/Bambu (Bambu Studio, OrcaSlicer, Creality Print, Elegoo, Anycubic, QIDI, Snapmaker),
+      у PrusaSlicer и у Cura; остальные — только запуск и открытие файлов.</div>`;
   const folder = S.settings.slicer_dir;
   const recent = (st.recent_folders || []).filter(f => f !== folder);
   $('#studioFolder').innerHTML = `<h3>Откуда берётся план расхода</h3>
     <div class="kv" style="margin-bottom:10px">
-      <b>Bambu Lab</b><span>Отправили печать из Bambu Studio — приложение само скачает этот файл с принтера (по коду доступа) и возьмёт граммы и время нужной пластины.</span>
-      <b>K1 Max</b><span>Расход приходит с принтера (Moonraker).</span></div>
+      <b>Bambu Lab</b><span>Отправили печать из слайсера — приложение само скачает этот файл с принтера (по коду доступа) и возьмёт граммы и время нужной пластины.</span>
+      <b>Klipper / K1</b><span>Расход приходит с принтера (Moonraker).</span></div>
     <h3 style="margin-top:14px">Папка с нарезкой <span class="pill">необязательно</span> ${folder ? '<span class="pill ok">выбрана</span>' : ''}</h3>
-    <div class="muted small">Нужна, только если вы экспортируете файлы вручную (на флешку или в папку) — тогда план ищется здесь по имени задания.</div>
+    <div class="muted small">Нужна, только если вы экспортируете файлы вручную (на флешку или в папку) — тогда план ищется здесь по имени задания.
+      Подходят файлы любых слайсеров: .gcode и .gcode.3mf.</div>
     <div class="path" style="margin:10px 0">${folder ? esc(folder) : '<span class="muted">—</span>'}</div>
     <div class="row-actions">
       ${desktop() ? '<button class="btn" onclick="pickSlicerFolder()">Выбрать папку…</button>' : ''}
       ${folder ? `<button class="btn ghost" onclick="openFolder(${esc(JSON.stringify(folder))})">Открыть в проводнике</button>` : ''}
     </div>
     ${!desktop() ? `<label style="margin-top:10px">Путь к папке<input id="slicerDirInput" value="${esc(folder)}" onchange="setSlicerDir(this.value)"></label>` : ''}
-    ${recent.length ? `<div class="muted small" style="margin-top:12px">Недавние папки Bambu Studio:</div>
+    ${recent.length ? `<div class="muted small" style="margin-top:12px">Недавние папки слайсеров:</div>
       <div class="chips">${recent.map(f => `<span class="chip" title="Выбрать" onclick="setSlicerDir(${esc(JSON.stringify(f))})">${esc(f)}</span>`).join('')}</div>` : ''}
-    <div class="hint" style="margin-top:10px">Ручной экспорт: в Bambu Studio после нарезки <b>Файл → Экспорт → Экспорт нарезанного файла пластины</b>,
+    <div class="hint" style="margin-top:10px">Ручной экспорт, например в Bambu Studio: после нарезки <b>Файл → Экспорт → Экспорт нарезанного файла пластины</b>,
       сохраните <b>.gcode.3mf</b> в эту папку (а копию — на карту принтера).</div>`;
   await loadSlicerFiles();
 }
+async function setDefaultSlicer(id) {
+  S.settings = await api('/api/settings', {method:'PUT', body:{default_slicer: id}}); toast('Файлы заданий будут открываться в этом слайсере'); loadStudio();
+}
+async function addSlicer(exe) {
+  try { await api('/api/slicers/custom', {method:'POST', body:{exe}}); PRESETS = null; toast('Слайсер добавлен'); loadStudio(); }
+  catch (e) { toast(e.message, true); }
+}
+async function removeSlicer(exe) {
+  await api('/api/slicers/custom', {method:'DELETE', body:{exe}}); PRESETS = null; toast('Убран из списка'); loadStudio();
+}
+async function pickSlicerExe() { const p = await window.pywebview.api.pick_exe(); if (p) addSlicer(p); }
 async function loadSlicerFiles() {
   const r = await api('/api/slicer/files');
   const t = $('#slicerTable');
@@ -873,20 +898,28 @@ async function loadSlicerFiles() {
     r.files.map(f => `<tr><td>${esc(f.name)}${f.error ? `<div class="small" style="color:var(--bad)">${esc(f.error)}</div>` : ''}</td>
       <td>${dt(f.mtime)}</td><td class="muted">${esc(f.slicer || '—')}</td><td class="num">${num(f.filament_g,1)}</td>
       <td class="num">${f.filament_mm != null ? num(f.filament_mm/1000,2) : '—'}</td><td class="num">${dur(f.est_time_s)}</td>
-      <td>${/\.(3mf|gcode)$/i.test(f.name) && S.studio?.found ? `<button class="btn ghost sm" onclick="openInStudio(${esc(JSON.stringify(f.path))})">Открыть</button>` : ''}</td></tr>`).join('')
+      <td>${/\.(3mf|gcode)$/i.test(f.name) ? openMenu(f.path) : ''}</td></tr>`).join('')
     : '<tr><td class="empty">В папке пока нет файлов .gcode / .gcode.3mf</td></tr>';
 }
-async function openInStudio(path) {
-  try { await api('/api/bambu-studio/open', {method:'POST', body:{path}}); toast(path ? 'Открываю в Bambu Studio…' : 'Запускаю Bambu Studio…'); }
+function openMenu(path) {
+  const list = (S.studio && S.studio.items) || [];
+  if (!list.length) return '';
+  if (list.length === 1) return `<button class="btn ghost sm" onclick="openInStudio(${esc(JSON.stringify(path))})">Открыть</button>`;
+  return `<select onchange="if(this.value){openInStudio(${esc(JSON.stringify(path))}, this.value); this.value=''}" style="width:auto;padding:3px 6px;font-size:12px">
+    <option value="">Открыть в…</option>${list.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('')}</select>`;
+}
+async function openInStudio(path, slicerId) {
+  const items = (S.studio && S.studio.items) || [];
+  const s = items.find(x => x.id === slicerId) || items.find(x => x.default);
+  try { await api('/api/slicers/open', {method:'POST', body:{path, slicer_id: slicerId || null}});
+        toast((path ? 'Открываю в ' : 'Запускаю ') + (s ? s.name : 'слайсере') + '…'); }
   catch (e) { toast(e.message, true); }
 }
 async function setSlicerDir(v) {
   S.settings = await api('/api/settings', {method:'PUT', body:{slicer_dir: (v || '').trim()}});
   toast(v ? 'Папка выбрана' : 'Папка сброшена'); renderOnboarding(); loadStudio();
 }
-async function setStudioPath(v) { S.settings = await api('/api/settings', {method:'PUT', body:{bambu_studio_path: v}}); PRESETS = null; loadStudio(); }
 async function pickSlicerFolder() { const p = await window.pywebview.api.pick_folder(S.settings.slicer_dir || ''); if (p) setSlicerDir(p); }
-async function pickStudioExe() { const p = await window.pywebview.api.pick_exe(); if (p) { await setStudioPath(p); toast('Путь сохранён'); } }
 function openFolder(p) { if (desktop()) window.pywebview.api.open_folder(p); }
 
 // ---------- настройки ----------
@@ -936,7 +969,7 @@ function renderSettings() {
       Запускать вместе с Windows (сразу в трей) — чтобы не пропустить ни одной печати</label>
     ${S.settings.autostart === '1' && !S.settings.autostart_active ? '<div class="small" style="color:var(--warn)">Запись в автозагрузке не найдена — снимите и поставьте галочку снова.</div>' : ''}`;
   $('#settingsForm').innerHTML = SETTINGS.map(([k, l, h]) => `<label>${l}<input data-s="${k}" value="${esc(S.settings[k])}">${h ? `<span class="help">${h}</span>` : ''}</label>`).join('') +
-    '<div class="hint">Цены пластика — на вкладке «Филамент». Папка нарезки и путь к Bambu Studio — на вкладке «Bambu Studio».</div>';
+    '<div class="hint">Цены пластика — на вкладке «Филамент». Папка нарезки и слайсеры — на вкладке «Слайсеры».</div>';
 }
 async function saveSettings() {
   const body = {}; document.querySelectorAll('[data-s]').forEach(el => body[el.dataset.s] = el.value.trim());

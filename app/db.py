@@ -143,7 +143,9 @@ DEFAULT_SETTINGS = {
     "labor_minutes": "0",
     "markup_percent": "0",
     "slicer_dir": "",
-    "bambu_studio_path": "",      # пусто = искать автоматически
+    "bambu_studio_path": "",      # из версии 0.0.1; теперь — slicers_custom
+    "slicers_custom": "[]",       # слайсеры, добавленные вручную: [{"exe", "name"}]
+    "default_slicer": "",         # путь к exe слайсера, который открывает файлы заданий
     "currency": "₽",
     "theme": "violet",            # violet | light | black | graphite | system
     "autostart": "0",             # запуск вместе с Windows (в трей) — включает пользователь
