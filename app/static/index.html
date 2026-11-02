@@ -321,8 +321,9 @@ function renderOnboarding() {
     ['Подключите розетку с учётом энергии (необязательно)', S.plugs.length > 0, "showTab('devices');newDevice('plugs')", 'Добавить'],
   ];
   const left = steps.filter(s => !s[1]).length;
+  const required = steps.filter(s => !s[1] && !/необязательно/.test(s[0])).length;  // остались только необязательные — не мешаем
   let hidden = false; try { hidden = localStorage.getItem('onboardingHidden') === '1'; } catch (e) {}
-  $('#onboarding').innerHTML = (!left || hidden) ? '' : `<div class="glass card" style="margin-bottom:14px">
+  $('#onboarding').innerHTML = (!required || hidden) ? '' : `<div class="glass card" style="margin-bottom:14px">
     <h3>Начало работы <span class="muted small" style="font-weight:400">осталось шагов: ${left}</span>
       <span class="spacer" style="flex:1"></span><button class="btn ghost sm" onclick="hideOnboarding()">Скрыть</button></h3>
     <div class="steps">${steps.map(([t, done, act, label], i) => `<div class="step ${done ? 'done' : ''}">
@@ -997,8 +998,11 @@ function closeDlg() { $('#dlg').close(); }
   applyTheme(S.settings.theme);
   window.matchMedia && matchMedia('(prefers-color-scheme: light)').addEventListener?.('change', () => applyTheme(S.settings.theme));
   try { S.state = await api('/api/state'); } catch (e) {}
+  // вкладка из адреса (#jobs, #devices…) — для ссылок; иначе последняя открытая
   let tab = 'overview'; try { tab = localStorage.getItem('tab') || tab; } catch (e) {}
+  if (location.hash.length > 1) tab = location.hash.slice(1);
   showTab(tab);
+  window.addEventListener('hashchange', () => location.hash.length > 1 && showTab(location.hash.slice(1)));
   setInterval(refreshState, 3000);
   setInterval(() => $('#overview').classList.contains('on') && refreshStats(), 30000);
 })();
