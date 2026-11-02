@@ -1,0 +1,45 @@
+name: Сообщить об ошибке
+description: Что-то работает не так, как ожидалось
+labels: ["ошибка"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо, что сообщаете! **Не вставляйте** код доступа принтера, local key Tuya или токен Яндекса.
+  - type: input
+    id: version
+    attributes:
+      label: Версия приложения
+      description: Внизу вкладки «Настройки»
+      placeholder: 0.0.1
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Принтер / розетка
+      placeholder: Bambu Lab P1S + AMS 2 Pro, прошивка 01.08.02.00
+  - type: input
+    id: windows
+    attributes:
+      label: Windows и Python
+      placeholder: Windows 11, Python 3.12
+  - type: textarea
+    id: what
+    attributes:
+      label: Что случилось
+      description: Что делали, что ожидали, что получилось. Скриншот приветствуется.
+    validations:
+      required: true
+  - type: textarea
+    id: raw
+    attributes:
+      label: Ответ устройства из «Проверить связь»
+      description: Раскройте «Сырой ответ устройства» → «Копировать» и вставьте сюда
+      render: json
+  - type: textarea
+    id: log
+    attributes:
+      label: Журнал
+      description: Вкладка «Журнал» и/или файл data\app.log, если там есть ошибки
+      render: text

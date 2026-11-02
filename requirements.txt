@@ -1,0 +1,8 @@
+flask>=3.0
+requests>=2.31
+paho-mqtt>=2.0
+tinytuya>=1.13
+openpyxl>=3.1
+pywebview>=5.0
+pystray>=0.19
+pillow>=10.0

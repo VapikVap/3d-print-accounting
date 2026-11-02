@@ -1,0 +1,16 @@
+name: Предложить улучшение
+description: Идея, новое устройство, удобство
+labels: ["улучшение"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: Что хотелось бы
+      description: Опишите задачу — что вы хотите сделать и почему сейчас неудобно
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Оборудование (если про устройство)
+      placeholder: Модель принтера, розетки, AMS
